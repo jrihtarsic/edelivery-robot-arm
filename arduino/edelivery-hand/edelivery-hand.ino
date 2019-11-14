@@ -16,6 +16,7 @@ const uint8_t LCD_PIN_DB5 = 11;
 const uint8_t LCD_PIN_DB4 = 10;
 const uint8_t LCD_PIN_E  =  9;
 const uint8_t LCD_PIN_RS =  8;
+
 // DHT temperature and humidity
 const int DHT11_PIN_S    =  0;
 // RTC
@@ -37,22 +38,36 @@ const uint8_t  SRV_PIN_PEDIESTAL = 7;
 const uint8_t  SRV_PIN_LOWER_ARM = 6;
 const uint8_t  SRV_PIN_UPPER_ARM = 5;
 const uint8_t  SRV_PIN_GRIPPER   = 4;
+// Other constants
+const unsigned long LCD_INFO_REFRESH_INTERVAL = 5000;
+const unsigned long LCD_INTRO_INTERVAL = 5000;
+const unsigned long MODE_CHANGE_INTERVAL = 1500;
+const unsigned long BUTTON_LONG_CLICK = 1500;
+const unsigned long BUTTON_LONG_PRESS_INTERVAL = 200;
 
 
 // --------------------------------------
 // Robot arm status variables
 // --------------------------------------
-const uint8_t ARM_MODE_CONTROL = 0;
-const uint8_t ARM_MODE_ACTION1 = 1;
-const uint8_t ARM_MODE_DATE_SETUP = 2;
+const uint8_t ARM_MODE_NOT_DEFINED = -1;
+const uint8_t ARM_MODE_INFO = 0; // mode shows date time and temperature and
+const uint8_t ARM_MODE_CONTROL = 1; // reads from the control
+const uint8_t ARM_MODE_ACTION1 = 2; // quick action 1
+const uint8_t ARM_MODE_SELECT = 4; // mode selection
+const uint8_t ARM_MODE_DATE_SETUP = 5; // date selection
+const uint8_t ARM_MODE_INTRO = 6; // startup message
 
-// BUTTON Status
+
+// button timestamp when it was pressed
 unsigned long BTN_LCD_LEFT_PRESSED = 0;
 unsigned long BTN_LCD_RIGHT_PRESSED = 0;
+bool BTN_LCD_LEFT_LONGPRESS_FIRED = false;
+bool CONSOLE_WARNING_SHOWN = false;
 
-//  Is control conneced
+// Detect flag if control is conneced
 int CTRL_ON = 0;
 
+// control statuses
 int CTRL_LEFT_PIN_BNT_PRESSED = 0;
 int CTRL_RIGHT_PIN_BNT_PRESSED = 0;
 int CTRL_LEFT_PIN_H_ACTION = 0;
@@ -60,21 +75,29 @@ int CTRL_LEFT_PIN_V_ACTION = 0;
 int CTRL_RIGHT_PIN_H_ACTION = 0;
 int CTRL_RIGHT_PIN_V_ACTION = 0;
 
+// quick action
 ArmPositionList quickAction1;
+// return to base positionaction
+ArmPositionList returnAction;
+
 
 // ARM MODE
-int ARM_MODE = ARM_MODE_CONTROL;
+int ARM_MODE = ARM_MODE_INFO;
+int ARM_MODE_PREVIOUS = ARM_MODE_INFO;
+// when choosing arm mode this is
+// current selected mode
+int ARM_MODE_CHANGE_MODE = ARM_MODE_NOT_DEFINED;
 
 // DateTime setup mode
-// 0 - day, 1- month, 2 - year, 3 hour, 4 minutes
+// 0 - day, 1- month, 2 - year, 3 - hour, 4 - minutes
 int DATETIME_SETUP_MODE = 0;
 
 
 // DISPLAY REFRESH
-unsigned long lastRefresh = 0;
-const unsigned long LCD_REFRESH_INTERVAL = 1000;
-const unsigned long BUTTON_LONG_CLICK = 2000;
-const unsigned long BUTTON_LONG_PRESS_INTERVAL = 200;
+unsigned long lastInfoRefreshTime = 0;
+unsigned long introStartTime = 0;
+unsigned long modeChangeTime = 0;
+
 unsigned long BUTTON_LONG_PRESS_EVENT = 0;
 
 
@@ -84,11 +107,12 @@ struct ArmConstraints {
   ArmPosition maxPosition;
 
   ArmConstraints():
-    initPosition(102,    73, 30, 17, 0),
+    initPosition(102,    73, 30, 20, 0),
     minPosition(5,    55, 30, 17, 0),
     maxPosition(175, 175, 165, 110, 0) {};
 
 };
+
 ArmConstraints armConstraints;
 ArmPosition currentArmPosition(107, 61, 52, 90, 0);
 
@@ -110,80 +134,235 @@ Servo servoGripper;
 
 
 
+/****************************************************************
+   Initialization function
+****************************************************************/
 void setup() {
   // start DHT
   dht.begin();
 
   // set up the LCD's number of columns and rows:
   lcd.begin(16, 2);
-  // Print a message to the LCD.
-  lcd.print("eDelivery hand!");
+
 
   // Set the current date, and time in the following format:
   // seconds, minutes, hours, day of the week, day of the month, month, year
   // this is for initial set..
-  //timer.setDS1302Time(00, 30, 20, 1, 6, 10, 2019);
+  //timer.setDS1302Time(00, 1, 1, 1, 1, 1, 2019);
 
   //
-  servoPediestal.attach(SRV_PIN_PEDIESTAL);
-  servoLowerArm.attach(SRV_PIN_LOWER_ARM);
-  servoUpperArm.attach(SRV_PIN_UPPER_ARM);
-  servoGripper.attach(SRV_PIN_GRIPPER);
 
 
   pinMode(BTN_LCD_PIN_LEFT, INPUT_PULLUP);
   pinMode(BTN_LCD_PIN_RIGHT, INPUT_PULLUP);
-
   pinMode(CTRL_LEFT_PIN_BNT, INPUT_PULLUP);
   pinMode(CTRL_RIGHT_PIN_BNT, INPUT_PULLUP);
 
-  // pull all joystick pins to up  if they are all
-  // 1023 than joistick is not connected
-  pinMode(CTRL_LEFT_PIN_V, INPUT_PULLUP);
-  pinMode(CTRL_LEFT_PIN_H, INPUT_PULLUP);
-  pinMode(CTRL_RIGHT_PIN_V, INPUT_PULLUP);
-  pinMode(CTRL_RIGHT_PIN_H, INPUT_PULLUP);
-
-
+  // set current arm position to init position
   currentArmPosition = armConstraints.initPosition;
+  // quick action 1 vector
+  quickAction1.AddPosition(35, 55, 86, 80, 20);
+  quickAction1.AddPosition(35, 55, 45, 70, 30);
+  quickAction1.AddPosition(35, 110, 45, 70, 30);
+  quickAction1.AddPosition(35, 110, 45, 20, 10);
+  quickAction1.AddPosition(35, 58, 80, 20, 30);
+  quickAction1.AddPosition(98, 58, 80, 20, 10);
+  quickAction1.AddPosition(98, 143, 149, 20, 20);
+  quickAction1.AddPosition(98, 160, 160, 20, 10);
+  quickAction1.AddPosition(98, 123, 120, 50, 10);
 
 
-  quickAction1.StartMovement(90, 136, 125, 60);
-  quickAction1.AddPosition(31, 55, 90, 70, 50);
-  quickAction1.AddPosition(31, 70, 33, 70, 20);
-  quickAction1.AddPosition(31, 110, 33, 70, 20);
-  quickAction1.AddPosition(31, 110, 33, 20, 20);
-  quickAction1.AddPosition(31, 79, 51, 20, 50);
-  quickAction1.AddPosition(31, 75, 109, 20, 50);
-  quickAction1.AddPosition(90, 136, 125, 24, 20);
-
-  quickAction1.moveToStart();
 
 
+
+  // go to init position because servo could detach
+  quickAction1.AddPosition(armConstraints.initPosition.pediestal,
+                           armConstraints.initPosition.lower_arm,
+                           armConstraints.initPosition.upper_arm,
+                           armConstraints.initPosition.gripper, 20);
+
+  // create return position action
+  returnAction.AddPosition(armConstraints.initPosition.pediestal,
+                           armConstraints.initPosition.lower_arm,
+                           armConstraints.initPosition.upper_arm,
+                           armConstraints.initPosition.gripper, 20);
+
+  // setup init mode
+  initProcess(ARM_MODE_INTRO);
 }
 
+/****************************************************************
+    Main program loop function
+ ****************************************************************/
 void loop() {
   readLCDButtons();
 
-  if (ARM_MODE == ARM_MODE_DATE_SETUP) {
-    processDateTimeSetup();
 
-  } else if (ARM_MODE == ARM_MODE_ACTION1) {
-    processAction1();
-  } else {
-    // read values from control
-    if ( readControl() && CTRL_LEFT_PIN_BNT_PRESSED == 0 ) {
-      processControlValues();
-    } else {
-      //
-      unsigned long currentTime = millis();
-      if ( currentTime - lastRefresh > LCD_REFRESH_INTERVAL) {
-        lastRefresh = currentTime;
+  switch (ARM_MODE) {
+    case ARM_MODE_SELECT:
+      processModeSelection();
+      break;
+    case ARM_MODE_INFO:
+      processInfoMode();
+      break;
+    case ARM_MODE_CONTROL:
+      if ( readControl() ) {
+        // attach servo motors
+        if (CONSOLE_WARNING_SHOWN) {
+          showJoystickControlMessage();
+          servosAttach();
+          CONSOLE_WARNING_SHOWN = false;
+        }
+        // show current datetime if left button clicked
+        if ( CTRL_LEFT_PIN_BNT_PRESSED == 1 ) {
+          lastInfoRefreshTime = 0;
+          showArmPosition();
+        }
+        else {
+          processControlValues();
+        }
+      } else if (!CONSOLE_WARNING_SHOWN) {
+        // show warning
+        servosDetach();
 
-        refreshDisplayTimeDateHumidity();
+        lcd.setCursor(0, 0);
+        lcd.print("Joystick console");
+        lcd.setCursor(0, 1);
+        lcd.print("not detected!");
+        CONSOLE_WARNING_SHOWN = true;
       }
-    }
+      break;
+    case ARM_MODE_ACTION1:
+      processAction1();
+      break;
+    case ARM_MODE_DATE_SETUP:
+      processDateTimeSetup();
+      break;
+    case ARM_MODE_INTRO:
+      processIntroMessage();
+      break;
   }
+}
+
+void showJoystickControlMessage () {
+
+  lcd.setCursor(0, 0);
+  lcd.print("Joystick        ");
+  lcd.setCursor(0, 1);
+  lcd.print("control!        ");
+  delay(100);
+}
+
+void servosAttach() {
+  servoPediestal.attach(SRV_PIN_PEDIESTAL);
+  servoLowerArm.attach(SRV_PIN_LOWER_ARM);
+  servoUpperArm.attach(SRV_PIN_UPPER_ARM);
+  servoGripper.attach(SRV_PIN_GRIPPER);
+  delay(50);
+}
+
+void servosDetach() {
+  // go to initial position
+  currentArmPosition = armConstraints.initPosition;
+  updateServoPosition();
+
+  // got to initial poi
+  servoPediestal.detach();
+  servoLowerArm.detach();
+  servoUpperArm.detach();
+  servoGripper.detach();
+  delay(50);
+}
+
+/**
+    set process init variables
+*/
+void initProcess(int iMode) {
+  lcd.clear();
+  ARM_MODE_PREVIOUS = ARM_MODE;
+  ARM_MODE = iMode;
+
+  switch (iMode) {
+    case ARM_MODE_SELECT:
+      servosDetach();
+      modeChangeTime = millis();
+      ARM_MODE_CHANGE_MODE = getNextArmMode( ARM_MODE  );
+      break;
+    case ARM_MODE_INFO:
+      servosDetach();
+      delay(100);
+      lastInfoRefreshTime = 0;
+      break;
+    case ARM_MODE_CONTROL:
+      showJoystickControlMessage();
+      CONSOLE_WARNING_SHOWN = false;
+      servosAttach();
+      break;
+    case ARM_MODE_ACTION1:
+      lcd.setCursor(0, 0);
+      lcd.print("Quick action!");
+      delay(100);
+
+      servosAttach();
+      // start from current arm position
+      quickAction1.StartMovement(currentArmPosition);
+      processAction1();
+      break;
+    case ARM_MODE_DATE_SETUP:
+      servosDetach();
+      DATETIME_SETUP_MODE = 0;
+      break;
+    case ARM_MODE_INTRO:
+      servosDetach();
+      lcd.setCursor(0, 0);
+      lcd.print("Hello Adrien,   ");
+      lcd.setCursor(0, 1);
+      lcd.print("I am eDel. hand!");
+      introStartTime = millis();
+      break;
+  }
+}
+/**
+   Intro message check if is showing long enough
+   then go to INFO mode
+*/
+void processIntroMessage() {
+  if ( millis() - introStartTime > LCD_INTRO_INTERVAL  )  {
+    introStartTime = 0;
+    initProcess(ARM_MODE_INFO);
+  }
+}
+
+/**
+   Process mode selection  1
+*/
+void processModeSelection() {
+  lcd.setCursor(0, 0);
+  lcd.print("Set mode:       ");
+  lcd.setCursor(0, 1);
+
+  if (millis() -  modeChangeTime > MODE_CHANGE_INTERVAL) {
+    ARM_MODE_CHANGE_MODE = getNextArmMode(ARM_MODE_CHANGE_MODE == ARM_MODE_NOT_DEFINED ? ARM_MODE : ARM_MODE_CHANGE_MODE );
+    modeChangeTime = millis();
+  }
+
+  switch (ARM_MODE_CHANGE_MODE) {
+    case ARM_MODE_INFO:
+      lcd.print("Show DateTime  ");
+      break;
+    case ARM_MODE_CONTROL:
+      lcd.print("Manual control     ");
+      break;
+    case ARM_MODE_ACTION1:
+      lcd.print("Quick Action       ");
+      break;
+    case ARM_MODE_DATE_SETUP:
+      lcd.print("DateTime setup  ");
+    case ARM_MODE_INTRO:
+      lcd.print("Intro message   ");
+      break;
+  }
+
 }
 
 /**
@@ -194,10 +373,10 @@ void processAction1() {
 
     ArmPosition pos = quickAction1.getCurrentPosition();
     currentArmPosition = pos;
-
     updateServoPosition();
   } else {
-    ARM_MODE = ARM_MODE_CONTROL;
+    // when end go to preious mode
+    initProcess(ARM_MODE_PREVIOUS);
   }
 
 }
@@ -235,7 +414,8 @@ void processDateTimeSetup() {
       lcd.print(String(timer.minutes));
       break;
   }
-  lcd.print("    ");
+  // clear the rest of string
+  lcd.print("                ");
 
 }
 
@@ -270,21 +450,23 @@ void updateServoPosition() {
   servoGripper.write(currentArmPosition.gripper);
   // waits for the servos to reach the position
   delay(30);
+}
 
+void showArmPosition() {
   // display values to LCD
   lcd.setCursor(0, 0);
   lcd.print("PD:");
   lcd.print((int)currentArmPosition.pediestal);
   lcd.print(" LA:");
   lcd.print((int)currentArmPosition.lower_arm);
-  lcd.print("    "); // clean
+  lcd.print("              "); // clean
 
   lcd.setCursor(0, 1);
   lcd.print("UA:");
   lcd.print((int)currentArmPosition.upper_arm);
   lcd.print(" GRP:");
   lcd.print((int)currentArmPosition.gripper);
-  lcd.print("    ");
+  lcd.print("              ");
 
 }
 /**
@@ -325,6 +507,10 @@ void readLCDButtons() {
   // read left button
   if (digitalRead(BTN_LCD_PIN_LEFT) == LOW) {
     BTN_LCD_LEFT_PRESSED = BTN_LCD_LEFT_PRESSED > 0 ? BTN_LCD_LEFT_PRESSED : millis();
+    if (!BTN_LCD_LEFT_LONGPRESS_FIRED && millis() - BTN_LCD_LEFT_PRESSED  > BUTTON_LONG_CLICK) {
+      lcdLeftButtonLongPressEvent();
+      BTN_LCD_LEFT_LONGPRESS_FIRED = true;
+    }
   } else {
     if (BTN_LCD_LEFT_PRESSED > 0) {
       if ( millis() - BTN_LCD_LEFT_PRESSED  > BUTTON_LONG_CLICK) {
@@ -333,6 +519,7 @@ void readLCDButtons() {
         lcdLeftButtonClickEvent();
       }
     }
+    BTN_LCD_LEFT_LONGPRESS_FIRED = false;
     BTN_LCD_LEFT_PRESSED = 0;
   }
 
@@ -369,10 +556,10 @@ boolean readControl() {
   // test if any of the values are not pulled up;
   //
 
-  CTRL_ON = iCtrLeftH < 950
-            || iCtrLeftV < 950
-            || iCtrRightH < 950
-            || iCtrRightV < 950;
+  CTRL_ON = iCtrLeftH > 15
+            || iCtrLeftV > 15
+            || iCtrRightH > 15
+            || iCtrRightV > 15;
 
 
   if (!CTRL_ON) {
@@ -392,6 +579,11 @@ boolean readControl() {
   if (digitalRead(CTRL_LEFT_PIN_BNT) == LOW) {
     CTRL_LEFT_PIN_BNT_PRESSED = 1;
   } else {
+    // set back the message
+    if (CTRL_LEFT_PIN_BNT_PRESSED == 1) {
+       showJoystickControlMessage();
+    }
+
     CTRL_LEFT_PIN_BNT_PRESSED = 0;
   }
 
@@ -407,49 +599,87 @@ boolean readControl() {
   Mehtod reads date/time, temperature and humidity
   and prints values to Lcd display
 */
-void refreshDisplayTimeDateHumidity() {
+void processInfoMode() {
+  // Do not refresh to often because it is time and current consuming..  :)
+  unsigned long currentTime = millis();
+  if ( currentTime - lastInfoRefreshTime > LCD_INFO_REFRESH_INTERVAL) {
+    lastInfoRefreshTime = currentTime;
 
-  timer.updateTime();
-  // print date time
-  lcd.setCursor(0, 0);
-  // todo fix 00 formating..
-  String timeString = String(timer.dayofmonth);
-  timeString = String(timeString + "/");
-  timeString = String(timeString + timer.month);
-  timeString = String(timeString + "/");
-  timeString = String(timeString + timer.year);
-  timeString = String(timeString + " ");
-  timeString = String(timeString + timer.hours);
-  timeString = String(timeString + ":");
-  timeString = String(timeString + timer.minutes);
-
-
-  // make sure that is 16 chars to clear row
-  while (timeString.length() < 16) {
+    timer.updateTime();
+    // print date time
+    lcd.setCursor(0, 0);
+    // todo fix 00 formating..
+    String timeString = addLeadingZero(timer.dayofmonth);
+    timeString = String(timeString + "/");
+    timeString = String(timeString + addLeadingZero(timer.month));
+    timeString = String(timeString + "/");
+    timeString = String(timeString + timer.year);
     timeString = String(timeString + " ");
-  }
-  lcd.print(timeString);
+    timeString = String(timeString + addLeadingZero(timer.hours));
+    timeString = String(timeString + ":");
+    timeString = String(timeString + addLeadingZero(timer.minutes));
 
 
-  float h = dht.readHumidity();
-  float t = dht.readTemperature();
+    // make sure that is 16 chars to clear row
+    while (timeString.length() < 16) {
+      timeString = String(timeString + " ");
+    }
+    lcd.print(timeString);
 
-  // check if returns are valid, if they are NaN (not a number) then something went wrong!
-  if (!isnan(t) && !isnan(h)) {
-    int it1 = t * 10;
-    lcd.setCursor(0, 1);
-    // print the number of seconds since reset:
-    lcd.print("T:"); // Prints string "Temp." on the LCD
-    lcd.print((int)t); //  trucate the decimal
-    lcd.print(" C,");
-    lcd.print(" H:");
-    lcd.print((int)h); // trucate the decimal
-    lcd.print(" %");
-  } else {
-    lcd.setCursor(0, 1);
-    lcd.print("Reading T&H ... "); //
+
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+
+    // check if returns are valid, if they are NaN (not a number) then something went wrong!
+    if (!isnan(t) && !isnan(h)) {
+      int it1 = t * 10;
+      lcd.setCursor(0, 1);
+      // print the number of seconds since reset:
+      lcd.print("T:"); // Prints string "Temp." on the LCD
+      lcd.print((int)t); //  trucate the decimal
+      lcd.print(" C,");
+      lcd.print(" H:");
+      lcd.print((int)h); // trucate the decimal
+      lcd.print(" %");
+    } else {
+      lcd.setCursor(0, 1);
+      lcd.print("Reading T&H ... "); //
+    }
   }
 }
+
+String addLeadingZero(uint8_t val){
+    String str = String(val);
+    while (str.length() <2){
+     str = String("0" + str);
+    }
+    return str;
+}
+
+/**
+   Left LCD button click event
+*/
+void lcdLeftButtonLongPressEvent() {
+  // got to select mode
+  initProcess(ARM_MODE_SELECT);
+}
+
+int getNextArmMode(int iCurrent) {
+  switch (iCurrent) {
+    case ARM_MODE_INTRO:
+      return  ARM_MODE_INFO;
+    case ARM_MODE_INFO:
+      return  ARM_MODE_CONTROL;
+    case ARM_MODE_CONTROL:
+      return  ARM_MODE_DATE_SETUP;
+    case ARM_MODE_DATE_SETUP:
+      return ARM_MODE_INTRO;
+    default:
+      return  ARM_MODE_INFO;
+  }
+}
+
+
 /**
    Left LCD button click event
 */
@@ -462,9 +692,11 @@ void lcdLeftButtonClickEvent() {
     }
     lcd.clear();
   } else {
-    // start quick action 1
-    quickAction1.StartMovement(currentArmPosition);
-    ARM_MODE = ARM_MODE_ACTION1;
+    // if arm mode not in
+    if (ARM_MODE != ARM_MODE_ACTION1) {
+      // start quick action 1
+      initProcess(ARM_MODE_ACTION1);
+    }
   }
 }
 
@@ -472,13 +704,12 @@ void lcdLeftButtonClickEvent() {
   Left LCD button LONG click event
 */
 void lcdLeftButtonLongClickEvent() {
-  ARM_MODE = ARM_MODE == ARM_MODE_DATE_SETUP ? ARM_MODE_CONTROL : ARM_MODE_DATE_SETUP;
-  quickAction1.StopMovement();
-  // mode is changed clear LCD
-  lcd.clear();
+  if (ARM_MODE_CHANGE_MODE != ARM_MODE_NOT_DEFINED) {
+    initProcess(ARM_MODE_CHANGE_MODE);
+    ARM_MODE_CHANGE_MODE = ARM_MODE_NOT_DEFINED;
+  } else {
+    initProcess(ARM_MODE_INFO);
 
-  if (ARM_MODE == ARM_MODE_DATE_SETUP) {
-    DATETIME_SETUP_MODE = 0;
   }
 }
 
@@ -513,6 +744,10 @@ void lcdRightButtonClickEvent() {
         }
     }
     timer.setDS1302Time(00, timer.minutes, timer.hours, 0, timer.dayofmonth, timer.month, timer.year);
+  } else if (ARM_MODE == ARM_MODE_INFO) {
+    initProcess(ARM_MODE_CONTROL);
+  } else {
+    initProcess(ARM_MODE_INFO);
   }
 }
 /**
